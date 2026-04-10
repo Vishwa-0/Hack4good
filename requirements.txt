@@ -3,4 +3,3 @@ selenium
 pandas
 scikit-learn
 joblib
-numpy
