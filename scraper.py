@@ -1,135 +1,108 @@
-# scraper.py
-import undetected_chromedriver as uc
+# scraper.py (Enhanced with multiple fallback selectors)
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
 import time
 import re
-import os
-
-def close_instagram_popups(driver):
-    """
-    Attempts to dismiss any sign-up or login pop-up modals on Instagram.
-    Returns True if a pop-up was closed, False otherwise.
-    """
-    close_button_selectors = [
-        ("css", "div[role='dialog'] svg[aria-label='Close']"),
-        ("xpath", "//*[local-name()='svg' and @aria-label='Close']"),
-        ("xpath", "//button[contains(text(), 'Not Now')]"),
-        ("xpath", "//div[@role='button' and contains(., 'Not Now')]"),
-        ("css", "div[role='button'] [aria-label='Close']"),
-    ]
-
-    for selector_type, selector in close_button_selectors:
-        try:
-            wait = WebDriverWait(driver, 5)
-            if selector_type == "xpath":
-                element = wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
-            else:
-                element = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            
-            driver.execute_script("arguments[0].click();", element)
-            time.sleep(1)
-            return True
-        except (NoSuchElementException, TimeoutException):
-            continue
-    
-    return False
-
+import json
 
 def scrape_instagram_profile(url):
-    """
-    Scrapes public Instagram profile data.
-    Automatically dismisses sign-up pop-ups if present.
-    Works on Arch Linux (local) and Streamlit Cloud (deployed).
-    """
-    options = uc.ChromeOptions()
-    options.add_argument("--headless=new")
+    options = Options()
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--lang=en-US")
-    options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     
-    # Determine browser executable path based on environment
-    # Arch Linux: /usr/bin/chromium
-    # Streamlit Cloud: /usr/bin/chromium (via packages.txt)
-    if os.path.exists("/usr/bin/chromium"):
-        browser_path = "/usr/bin/chromium"
-    elif os.path.exists("/usr/bin/chromium-browser"):
-        browser_path = "/usr/bin/chromium-browser"
-    else:
-        browser_path = None  # Let undetected-chromedriver find it
-    
-    driver_kwargs = {
-        "options": options,
-        "version_main": 120
-    }
-    if browser_path:
-        driver_kwargs["browser_executable_path"] = browser_path
-    
-    driver = uc.Chrome(**driver_kwargs)
+    try:
+        driver = webdriver.Chrome(options=options)
+    except:
+        from webdriver_manager.chrome import ChromeDriverManager
+        from selenium.webdriver.chrome.service import Service
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
     try:
         driver.get(url)
-        time.sleep(4)
+        time.sleep(4)  # Wait longer for dynamic content
         
-        # Check for login wall (full page redirect)
+        # Check if we hit a login wall
         if "login" in driver.current_url or "accounts/login" in driver.current_url:
             driver.quit()
             raise Exception("Instagram requires login. Use manual entry.")
         
-        # Dismiss any sign-up pop-ups
-        close_instagram_popups(driver)
-        time.sleep(1)  # Give page a moment to settle after pop-up closes
+        # Method 1: Try meta description (original approach)
+        try:
+            meta_desc = driver.find_element(By.XPATH, "//meta[@name='description']").get_attribute("content")
+            if meta_desc:
+                followers_match = re.search(r'([\d,]+)\s+Followers', meta_desc)
+                following_match = re.search(r'([\d,]+)\s+Following', meta_desc)
+                posts_match = re.search(r'([\d,]+)\s+Posts', meta_desc)
+                followers = int(followers_match.group(1).replace(',', '')) if followers_match else 0
+                following = int(following_match.group(1).replace(',', '')) if following_match else 0
+                posts = int(posts_match.group(1).replace(',', '')) if posts_match else 0
+        except:
+            followers = following = posts = 0
         
-        # Extract from meta description
-        meta_desc = driver.find_element(By.XPATH, "//meta[@name='description']").get_attribute("content")
-        followers_match = re.search(r'([\d,]+)\s+Followers', meta_desc)
-        following_match = re.search(r'([\d,]+)\s+Following', meta_desc)
-        posts_match = re.search(r'([\d,]+)\s+Posts', meta_desc)
+        # Method 2: Try JSON data in page source (newer Instagram)
+        if followers == 0:
+            page_source = driver.page_source
+            # Look for JSON-LD structured data
+            json_match = re.search(r'<script type="application/ld\+json">(.*?)</script>', page_source, re.DOTALL)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group(1))
+                    followers = data.get('mainEntityofPage', {}).get('interactionStatistic', [{}])[0].get('userInteractionCount', 0)
+                except:
+                    pass
         
-        followers = int(followers_match.group(1).replace(',', '')) if followers_match else 0
-        following = int(following_match.group(1).replace(',', '')) if following_match else 0
-        posts = int(posts_match.group(1).replace(',', '')) if posts_match else 0
+        # Method 3: Try specific span elements (common selectors)
+        if followers == 0:
+            try:
+                # Look for elements with "followers" text
+                elements = driver.find_elements(By.XPATH, "//span[contains(text(), 'followers')]/span")
+                if elements:
+                    followers_text = elements[0].get_attribute("title") or elements[0].text
+                    followers = int(re.sub(r'[^\d]', '', followers_text))
+            except:
+                pass
         
-        # Username features
+        # If still zero, we likely failed - raise error for manual fallback
+        if followers == 0 and following == 0 and posts == 0:
+            driver.quit()
+            raise Exception("Could not extract profile data. Instagram may be blocking automated access.")
+        
+        # Rest of feature extraction (username, fullname, bio, etc.)
         username = url.rstrip('/').split('/')[-1]
         username_length = len(username)
-        nums_username = sum(c.isdigit() for c in username)
-        nums_length_username = nums_username / username_length if username_length > 0 else 0.0
+        nums_in_username = sum(c.isdigit() for c in username)
+        nums_length_username = nums_in_username / username_length if username_length > 0 else 0
         
-        # Full name
         try:
-            fullname = driver.find_element(By.XPATH, "//h1 | //h2[contains(@class, 'x1lliihq')]").text.strip()
+            fullname_elem = driver.find_element(By.XPATH, "//h1 | //h2[contains(@class, 'x1lliihq')]")
+            fullname = fullname_elem.text.strip()
         except:
             fullname = username
         
         fullname_words = len(fullname.split())
-        fullname_len = len(fullname)
-        nums_fullname = sum(c.isdigit() for c in fullname)
-        nums_length_fullname = nums_fullname / fullname_len if fullname_len > 0 else 0.0
+        fullname_length = len(fullname)
+        nums_in_fullname = sum(c.isdigit() for c in fullname)
+        nums_length_fullname = nums_in_fullname / fullname_length if fullname_length > 0 else 0
         name_equals_username = 1 if fullname.lower() == username.lower() else 0
         
-        # Bio/description
         try:
-            bio = driver.find_element(By.XPATH, "//div[contains(@class, 'x7a106z')]//span | //div[@class='_aa_c']//span").text
-            description_length = len(bio)
+            bio_elem = driver.find_element(By.XPATH, "//div[contains(@class, 'x7a106z')]//span")
+            description_length = len(bio_elem.text)
         except:
             description_length = 0
         
-        # External URL
         external_url = 1 if driver.find_elements(By.XPATH, "//a[contains(@href, 'http') and not(contains(@href, 'instagram'))]") else 0
-        
-        # Private account
         private = 1 if driver.find_elements(By.XPATH, "//h2[contains(text(), 'This Account is Private')]") else 0
         
-        # Profile picture (custom vs default)
         try:
-            pic = driver.find_element(By.XPATH, "//img[contains(@alt, 'profile picture')]")
-            pic_src = pic.get_attribute("src")
+            pic_elem = driver.find_element(By.XPATH, "//img[contains(@alt, 'profile picture')]")
+            pic_src = pic_elem.get_attribute("src")
             profile_pic = 0 if "44884218" in pic_src else 1
         except:
             profile_pic = 0
@@ -138,9 +111,9 @@ def scrape_instagram_profile(url):
         
         return {
             'profile pic': profile_pic,
-            'nums/length username': round(nums_length_username, 4),
+            'nums/length username': nums_length_username,
             'fullname words': fullname_words,
-            'nums/length fullname': round(nums_length_fullname, 4),
+            'nums/length fullname': nums_length_fullname,
             'name==username': name_equals_username,
             'description length': description_length,
             'external URL': external_url,
@@ -149,7 +122,7 @@ def scrape_instagram_profile(url):
             '#followers': followers,
             '#follows': following
         }
-        
+    
     except Exception as e:
         driver.quit()
         raise Exception(f"Scraping failed: {str(e)}")
