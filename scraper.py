@@ -1,16 +1,16 @@
-
+# scraper.py
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 import time
 import re
+import os
 
 def scrape_instagram_profile(url):
     """
     Scrapes public Instagram profile data.
-    Returns a dictionary with the 11 features needed for the model.
+    Works on both local machines and Streamlit Cloud.
     """
     options = Options()
     options.add_argument("--headless")
@@ -19,7 +19,22 @@ def scrape_instagram_profile(url):
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    # Detect environment and set up driver accordingly
+    # Streamlit Cloud uses system chromedriver from packages.txt
+    # Local machine can use webdriver-manager or system Chrome
+    
+    try:
+        # First try: Use system chromedriver (works on Streamlit Cloud)
+        driver = webdriver.Chrome(options=options)
+    except Exception as e:
+        # Fallback: Use webdriver-manager for local development
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+        except ImportError:
+            raise Exception("Could not initialize ChromeDriver. Please ensure Chrome is installed.")
     
     try:
         driver.get(url)
