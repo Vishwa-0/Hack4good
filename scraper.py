@@ -1,12 +1,14 @@
 # scraper.py
-import undetected_chromedriver as uc
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 import time
 import re
 import os
 
 def scrape_instagram_profile(url):
-    options = uc.ChromeOptions()
+    options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -14,16 +16,18 @@ def scrape_instagram_profile(url):
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
     
-    # For cloud: use system Chromium installed via packages.txt
-    driver = uc.Chrome(
-        options=options,
-        browser_executable_path="/usr/bin/chromium",
-        version_main=120
-    )
+    # Use system chromedriver installed via packages.txt
+    # Streamlit Cloud puts chromedriver in PATH
+    driver = webdriver.Chrome(options=options)
     
     try:
         driver.get(url)
         time.sleep(4)
+        
+        # Check for login wall
+        if "login" in driver.current_url:
+            driver.quit()
+            raise Exception("Instagram requires login. Use manual entry.")
         
         meta_desc = driver.find_element(By.XPATH, "//meta[@name='description']").get_attribute("content")
         followers_match = re.search(r'([\d,]+)\s+Followers', meta_desc)
